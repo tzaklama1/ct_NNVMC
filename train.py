@@ -1,44 +1,87 @@
-# train.py
-import torch, torch.nn.functional as F
-from lattice import enumerate_fock
-from model import CoTrainingTransformer
-from julia.api import Julia; jl = Julia(compiled_modules=False)
-from julia import Main as jl_main
-jl_main.include("fermionED.jl")                          # loads Hamiltonian helpers
+# model.py
+"""
+Transformer for lattice Fock states.
+Input  : occ ∈ {0,1}^{N_sites}, params = (t,V)
+Output : complex coefficient  ψ_sigma(t,V) = Re + i Im
+"""
+from typing import Sequence
+import jax, jax.numpy as jnp
+import flax.linen as nn
 
-def exact_hamiltonian(t, V, Lx, Ly):
-    # Build one- and two-body lists in Julia, get sparse CSC back as SciPy matrix
-    return jl_main.build_H(t, V, Lx, Ly)                 # you add this in fermionED.jl
+# Building Blocks #
+class ResidualSelfAttention(nn.Module):
+    d_model: int
+    n_heads: int
+    mlp_dims: Sequence[int]
+    ln: bool = True
 
-def train_epoch(model, opt, states, params, H):
-    B = 128
-    for _ in range(0, len(states), B):
-        batch = states[_:_+B]
-        occ = torch.tensor([[ (s >> k) & 1 for k in range(model.N_sites) ] for s in batch])
-        p   = params.repeat(len(batch), 1)
-        # ---- loss: supervised energy regression (ED)
-        with torch.no_grad():
-            E_exact = torch.tensor([ jl_main.local_energy_int(s, H) for s in batch ])
-        pred = model(occ, p)
-        loss = F.mse_loss(pred, E_exact)
-        opt.zero_grad(); loss.backward(); opt.step()
+    @nn.compact
+    def __call__(self, x, *, train: bool):
+        h = nn.LayerNorm()(x) if self.ln else x
+        h = nn.SelfAttention(
+            num_heads=self.n_heads,
+            kernel_init=nn.initializers.lecun_normal(),
+            dropout_rate=0.0,
+            deterministic=not train
+        )(h)
+        x = x + h                          # residual
 
-def run():
-    Lx = Ly = 2
-    N_sites = 2*Lx*Ly
-    N_particles = Lx*Ly       # half-filling
-    states = enumerate_fock(N_sites, N_particles)
-    params = torch.tensor([0.5, 5.0])         # example (t,V)
-    H = exact_hamiltonian(*params, Lx, Ly)
+        h = nn.LayerNorm()(x) if self.ln else x
+        for dim in self.mlp_dims:
+            h = nn.Dense(dim)(h); h = nn.gelu(h)
+        h = nn.Dense(self.d_model)(h)
+        return x + h                       # residual
 
-    model = CoTrainingTransformer(N_sites)
-    model.N_sites = N_sites                   # minor convenience
-    opt = torch.optim.Adam(model.parameters(), 1e-3)
 
-    for epoch in range(200):
-        train_epoch(model, opt, states, params, H)
-        if epoch % 20 == 0:
-            print(f"epoch {epoch:03d}")
+class CrossAttentionParams(nn.Module):
+    d_model: int
+    n_heads: int
 
-if __name__ == "__main__":
-    run()
+    @nn.compact
+    def __call__(self, sites, params_tok):
+        # sites: (B,N,D) queries | params_tok: (B,1,D) keys+values
+        attn = nn.MultiHeadDotProductAttention(
+            num_heads=self.n_heads,
+            dropout_rate=0.0,
+            deterministic=True
+        )
+        return attn(sites, params_tok)     # same shape as sites
+
+# Attention Model #
+class LatticePsiFormer(nn.Module):
+    n_sites: int
+    d_model: int = 256
+    depth: int = 6
+    n_heads: int = 8
+    mlp_dims: Sequence[int] = (512,)
+
+    @nn.compact
+    def __call__(self, occ, params, *, train: bool = False):
+        """
+        occ   : int32[B,N]    lattice occupations (0/1)
+        params: float32[B,2]  (t, V)
+        """
+        B, N = occ.shape
+        assert N == self.n_sites, "Mismatch n_sites"
+
+        # Token & positional embeddings -------------------------------------
+        tok = nn.Embed(num_embeddings=2, features=self.d_model)(occ)
+        pos = self.param('pos_emb',
+                         nn.initializers.normal(stddev=0.02),
+                         (1, self.n_sites, self.d_model))
+        x = tok + pos
+
+        # Stack of residual self-attention blocks ---------------------------
+        for _ in range(self.depth):
+            x = ResidualSelfAttention(
+                    self.d_model, self.n_heads, self.mlp_dims)(x, train=train)
+
+        # Param token & cross-attention -------------------------------------
+        p_tok = nn.Dense(self.d_model)(params)[..., None, :]   # (B,1,D)
+        x = x + CrossAttentionParams(self.d_model, self.n_heads)(x, p_tok)
+
+        # Pool & output ------------------------------------------------------
+        g = x.mean(axis=1)                         # (B, D)
+        g = nn.LayerNorm()(g)
+        out = nn.Dense(2)(g)                       # (B, 2)  →  Re, Im
+        return out

@@ -1,52 +1,92 @@
 # model.py
-import torch
-import torch.nn as nn
+"""
+PsiFormer-style transformer for lattice Fock states.
+Input  : occ ∈ {0,1}^{N_sites}, params = (t,V)
+Output : complex coefficient  ψ_sigma(t,V) = Re + i Im
+"""
+from typing import Sequence
+import jax, jax.numpy as jnp
+import flax.linen as nn
 
-class CoTrainingTransformer(nn.Module):
-    """
-    Input  : occupation sequence (0/1) of length N
-    Params : (t, V)  -> passed as two special tokens
-    Architecture:
-      ① token+pos embed ② self-attn encoder
-      ③ cross-attn where queries≈site states, keys/values≈param tokens
-    Output : scalar log-amplitude  log|ψ(σ; t,V)|
-    """
-    def __init__(self, N_sites: int, d_model: int = 256,
-                 n_layers: int = 8, n_heads: int = 8):
-        super().__init__()
-        self.site_emb  = nn.Embedding(2, d_model)          # 0/1 occupancy
-        self.pos_emb   = nn.Parameter(torch.randn(1, N_sites, d_model))
+# --------------------------------------------------------------------------- #
+#                       Low-level building blocks                             #
+# --------------------------------------------------------------------------- #
+class ResidualSelfAttention(nn.Module):
+    d_model: int
+    n_heads: int
+    mlp_dims: Sequence[int]
+    ln: bool = True
 
-        self.param_proj = nn.Linear(2, d_model)            # (t,V) → token
-        enc_layer = nn.TransformerEncoderLayer(d_model,
-                                               n_heads,
-                                               4*d_model,
-                                               batch_first=True)
-        self.encoder = nn.TransformerEncoder(enc_layer, n_layers)
+    @nn.compact
+    def __call__(self, x, *, train: bool):
+        h = nn.LayerNorm()(x) if self.ln else x
+        h = nn.SelfAttention(
+            num_heads=self.n_heads,
+            kernel_init=nn.initializers.lecun_normal(),
+            dropout_rate=0.0,
+            deterministic=not train
+        )(h)
+        x = x + h                          # residual
 
-        # --- cross-attention block ---
-        self.cross_attn = nn.MultiheadAttention(d_model, n_heads,
-                                                batch_first=True)
+        h = nn.LayerNorm()(x) if self.ln else x
+        for dim in self.mlp_dims:
+            h = nn.Dense(dim)(h); h = nn.gelu(h)
+        h = nn.Dense(self.d_model)(h)
+        return x + h                       # residual
 
-        # --- read-out ---
-        self.head = nn.Sequential(nn.Linear(d_model, d_model),
-                                  nn.SiLU(),
-                                  nn.Linear(d_model, 1))
 
-    def forward(self, occ, params):
+class CrossAttentionParams(nn.Module):
+    d_model: int
+    n_heads: int
+
+    @nn.compact
+    def __call__(self, sites, params_tok):
+        # sites: (B,N,D) queries | params_tok: (B,1,D) keys+values
+        attn = nn.MultiHeadDotProductAttention(
+            num_heads=self.n_heads,
+            dropout_rate=0.0,
+            deterministic=True
+        )
+        return attn(sites, params_tok)     # same shape as sites
+
+
+# --------------------------------------------------------------------------- #
+#                         Full PsiFormer lattice model                        #
+# --------------------------------------------------------------------------- #
+class LatticePsiFormer(nn.Module):
+    n_sites: int
+    d_model: int = 256
+    depth: int = 6
+    n_heads: int = 8
+    mlp_dims: Sequence[int] = (512,)
+
+    @nn.compact
+    def __call__(self, occ, params, *, train: bool = False):
         """
-        occ    : (B, N)   int  {0,1}
-        params : (B, 2)   float  (t, V)
+        occ   : int32[B,N]    lattice occupations (0/1)
+        params: float32[B,2]  (t, V)
         """
         B, N = occ.shape
-        x = self.site_emb(occ) + self.pos_emb               # (B,N,D)
+        assert N == self.n_sites, "Mismatch n_sites"
 
-        p_tok = self.param_proj(params).unsqueeze(1)        # (B,1,D)
-        # ① site-only contextualisation
-        h = self.encoder(x)                                 # (B,N,D)
-        # ② cross-attend (sites <- params)
-        h2, _ = self.cross_attn(query=h, key=p_tok, value=p_tok)
-        h = h + h2                                          # residual
-        # ③ global pool (mean)
-        h_mean = h.mean(dim=1)
-        return self.head(h_mean).squeeze(-1)                # (B,)
+        # Token & positional embeddings -------------------------------------
+        tok = nn.Embed(num_embeddings=2, features=self.d_model)(occ)
+        pos = self.param('pos_emb',
+                         nn.initializers.normal(stddev=0.02),
+                         (1, self.n_sites, self.d_model))
+        x = tok + pos
+
+        # Stack of residual self-attention blocks ---------------------------
+        for _ in range(self.depth):
+            x = ResidualSelfAttention(
+                    self.d_model, self.n_heads, self.mlp_dims)(x, train=train)
+
+        # Param token & cross-attention -------------------------------------
+        p_tok = nn.Dense(self.d_model)(params)[..., None, :]   # (B,1,D)
+        x = x + CrossAttentionParams(self.d_model, self.n_heads)(x, p_tok)
+
+        # Pool & output ------------------------------------------------------
+        g = x.mean(axis=1)                         # (B, D)
+        g = nn.LayerNorm()(g)
+        out = nn.Dense(2)(g)                       # (B, 2)  →  Re, Im
+        return out
