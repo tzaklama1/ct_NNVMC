@@ -8,9 +8,9 @@ import jax, jax.numpy as jnp, optax, chex
 from flax.training import train_state
 from functools import partial
 
-from model import LatticePsiFormer
-from honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
-from lattice_1d import enumerate_fock as enum_1d, mask_to_array as arr_1d
+from networks.model import LatticeTransFormer
+from phys_system.honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
+from phys_system.lattice1D import enumerate_fock as enum_1d, mask_to_array as arr_1d
 
 # ----------------- choose lattice & parameters ----------------------------- #
 LATTICE = '1d'        # '1d'  or  'honeycomb'
@@ -55,10 +55,20 @@ def mse_fn(params, occ, tv, target):
     preds = model.apply(params, occ, tv, train=False)
     return jnp.mean((preds-target)**2)
 
+# loss (no jit, params are dynamic)
+def loss_fn(params, occ, tv, target):
+    preds = model.apply(params, occ, tv, train=False)
+    return jnp.mean((preds - target) ** 2)
+
+# value_and_grad takes care of autodiff
 @jax.jit
-def train_step(state, occ, tv, target):
-    grads = jax.grad(mse_fn)(state.params, occ, tv, target)
-    return state.apply_gradients(grads=grads)
+def train_step(state: train_state.TrainState,
+               occ: jnp.ndarray,
+               tv:  jnp.ndarray,
+               target: jnp.ndarray):
+    loss, grads = jax.value_and_grad(loss_fn)(state.params, occ, tv, target)
+    state = state.apply_gradients(grads=grads)
+    return state, loss
 
 def run(epochs=4000):
     rng = jax.random.PRNGKey(42)
@@ -69,10 +79,9 @@ def run(epochs=4000):
     target = COEFF_DB[TRAIN_TV]
 
     for e in range(epochs):
-        state = train_step(state, occ, tv, target)
+        state, loss = train_step(state, occ, tv, target)
         if e%500==0:
-            err = mse_fn(state.params, occ, tv, target)
-            print(f"epoch {e:4d} MSE {err:.3e}")
+            print(f"epoch {e:4d} | MSE = {float(loss):.3e}")
 
     # generalisation test
     test_tv  = jnp.tile(jnp.array(TEST_TV,dtype=jnp.float32),
