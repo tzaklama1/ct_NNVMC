@@ -4,6 +4,6 @@ set -e
 
 echo "=== Cotrained t-V Transformer test run (JAX) ==="
 python - <<'PY'
-from train import main
+from train_JAX import main
 main()
 PY

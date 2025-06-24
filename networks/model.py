@@ -1,6 +1,6 @@
 # model.py
 """
-PsiFormer-style transformer for lattice Fock states.
+Transformer for lattice Fock states.
 Input  : occ ∈ {0,1}^{N_sites}, params = (t,V)
 Output : complex coefficient  ψ_sigma(t,V) = Re + i Im
 """
@@ -8,9 +8,7 @@ from typing import Sequence
 import jax, jax.numpy as jnp
 import flax.linen as nn
 
-# --------------------------------------------------------------------------- #
-#                       Low-level building blocks                             #
-# --------------------------------------------------------------------------- #
+# Building Blocks #
 class ResidualSelfAttention(nn.Module):
     d_model: int
     n_heads: int
@@ -49,11 +47,8 @@ class CrossAttentionParams(nn.Module):
         )
         return attn(sites, params_tok)     # same shape as sites
 
-
-# --------------------------------------------------------------------------- #
-#                         Full PsiFormer lattice model                        #
-# --------------------------------------------------------------------------- #
-class LatticePsiFormer(nn.Module):
+# Attention Model #
+class LatticeTransFormer(nn.Module):
     n_sites: int
     d_model: int = 256
     depth: int = 6

@@ -1,87 +1,86 @@
-# model.py
+# train.py
 """
-Transformer for lattice Fock states.
-Input  : occ ∈ {0,1}^{N_sites}, params = (t,V)
-Output : complex coefficient  ψ_sigma(t,V) = Re + i Im
+Minimal training loop for lattice PsiFormer.
+ * Works on CPU or GPU (JAX auto-select).
+ * Synthetic targets (random complex) – replace with ED values for real runs.
 """
-from typing import Sequence
-import jax, jax.numpy as jnp
-import flax.linen as nn
+import jax, jax.numpy as jnp, optax, chex
+from flax.training import train_state
+from functools import partial
 
-# Building Blocks #
-class ResidualSelfAttention(nn.Module):
-    d_model: int
-    n_heads: int
-    mlp_dims: Sequence[int]
-    ln: bool = True
+from model import LatticePsiFormer
+from honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
+from lattice_1d import enumerate_fock as enum_1d, mask_to_array as arr_1d
 
-    @nn.compact
-    def __call__(self, x, *, train: bool):
-        h = nn.LayerNorm()(x) if self.ln else x
-        h = nn.SelfAttention(
-            num_heads=self.n_heads,
-            kernel_init=nn.initializers.lecun_normal(),
-            dropout_rate=0.0,
-            deterministic=not train
-        )(h)
-        x = x + h                          # residual
+# ----------------- choose lattice & parameters ----------------------------- #
+LATTICE = '1d'        # '1d'  or  'honeycomb'
+if LATTICE == '1d':
+    L = 10
+    N_SITES = L
+    N_PART  = L // 2
+    BASIS   = enum_1d(L, N_PART)
+    arr_fn  = lambda m: arr_1d(m, L)
+else:
+    Lx = Ly = 2
+    from honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
+    N_SITES = 2*Lx*Ly
+    N_PART  = N_SITES // 2
+    BASIS   = enum_hc(N_SITES, N_PART)
+    arr_fn  = lambda m: arr_hc(m, N_SITES)
 
-        h = nn.LayerNorm()(x) if self.ln else x
-        for dim in self.mlp_dims:
-            h = nn.Dense(dim)(h); h = nn.gelu(h)
-        h = nn.Dense(self.d_model)(h)
-        return x + h                       # residual
+OCC = jnp.array([arr_fn(m) for m in BASIS], dtype=jnp.int32)
 
+# ----------------- synthetic coefficients (Re,Im) --------------------------- #
+key = jax.random.PRNGKey(0)
+def syn_coeffs(k):
+    return jax.random.normal(k, (len(BASIS), 2))*0.1
+COEFF_DB = {(0.5,4.0): syn_coeffs(key),
+            (1.2,2.0): syn_coeffs(key^jnp.uint32(11))}
 
-class CrossAttentionParams(nn.Module):
-    d_model: int
-    n_heads: int
+TRAIN_TV = (0.5,4.0)
+TEST_TV  = (0.9,3.0)
+COEFF_DB.setdefault(TEST_TV, syn_coeffs(key^jnp.uint32(77)))
 
-    @nn.compact
-    def __call__(self, sites, params_tok):
-        # sites: (B,N,D) queries | params_tok: (B,1,D) keys+values
-        attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.n_heads,
-            dropout_rate=0.0,
-            deterministic=True
-        )
-        return attn(sites, params_tok)     # same shape as sites
+# ----------------- model & optimiser --------------------------------------- #
+model = LatticeTransFormer(n_sites=N_SITES, depth=8, d_model=256)
 
-# Attention Model #
-class LatticePsiFormer(nn.Module):
-    n_sites: int
-    d_model: int = 256
-    depth: int = 6
-    n_heads: int = 8
-    mlp_dims: Sequence[int] = (512,)
+def create_state(rng):
+    params = model.init(rng, OCC, jnp.ones((len(BASIS),2)), train=False)
+    tx = optax.adam(1e-3)
+    return train_state.TrainState.create(
+        apply_fn=model.apply, params=params, tx=tx)
 
-    @nn.compact
-    def __call__(self, occ, params, *, train: bool = False):
-        """
-        occ   : int32[B,N]    lattice occupations (0/1)
-        params: float32[B,2]  (t, V)
-        """
-        B, N = occ.shape
-        assert N == self.n_sites, "Mismatch n_sites"
+@partial(jax.jit, static_argnums=0)
+def mse_fn(params, occ, tv, target):
+    preds = model.apply(params, occ, tv, train=False)
+    return jnp.mean((preds-target)**2)
 
-        # Token & positional embeddings -------------------------------------
-        tok = nn.Embed(num_embeddings=2, features=self.d_model)(occ)
-        pos = self.param('pos_emb',
-                         nn.initializers.normal(stddev=0.02),
-                         (1, self.n_sites, self.d_model))
-        x = tok + pos
+@jax.jit
+def train_step(state, occ, tv, target):
+    grads = jax.grad(mse_fn)(state.params, occ, tv, target)
+    return state.apply_gradients(grads=grads)
 
-        # Stack of residual self-attention blocks ---------------------------
-        for _ in range(self.depth):
-            x = ResidualSelfAttention(
-                    self.d_model, self.n_heads, self.mlp_dims)(x, train=train)
+def run(epochs=4000):
+    rng = jax.random.PRNGKey(42)
+    state = create_state(rng)
 
-        # Param token & cross-attention -------------------------------------
-        p_tok = nn.Dense(self.d_model)(params)[..., None, :]   # (B,1,D)
-        x = x + CrossAttentionParams(self.d_model, self.n_heads)(x, p_tok)
+    occ = OCC
+    tv  = jnp.tile(jnp.array(TRAIN_TV,dtype=jnp.float32), (len(BASIS),1))
+    target = COEFF_DB[TRAIN_TV]
 
-        # Pool & output ------------------------------------------------------
-        g = x.mean(axis=1)                         # (B, D)
-        g = nn.LayerNorm()(g)
-        out = nn.Dense(2)(g)                       # (B, 2)  →  Re, Im
-        return out
+    for e in range(epochs):
+        state = train_step(state, occ, tv, target)
+        if e%500==0:
+            err = mse_fn(state.params, occ, tv, target)
+            print(f"epoch {e:4d} MSE {err:.3e}")
+
+    # generalisation test
+    test_tv  = jnp.tile(jnp.array(TEST_TV,dtype=jnp.float32),
+                        (len(BASIS),1))
+    pred     = model.apply(state.params, OCC, test_tv, train=False)
+    mse_test = jnp.mean((pred - COEFF_DB[TEST_TV])**2)
+    print("Generalisation MSE on unseen (t,V) =", float(mse_test))
+
+if __name__ == "__main__":
+    print("Running on device:", jax.default_backend().upper())
+    run()
