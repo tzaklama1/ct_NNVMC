@@ -11,6 +11,7 @@ from functools import partial
 from networks.model import LatticeTransFormer
 from phys_system.honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
 from phys_system.lattice1D import enumerate_fock as enum_1d, mask_to_array as arr_1d
+from Loss.loss import overlap_loss, amp_phase_loss
 
 # ----------------- choose lattice & parameters ----------------------------- #
 LATTICE = '1d'        # '1d'  or  'honeycomb'
@@ -22,7 +23,7 @@ if LATTICE == '1d':
     arr_fn  = lambda m: arr_1d(m, L)
 else:
     Lx = Ly = 2
-    from honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
+    from phys_system.honeycomb import enumerate_fock as enum_hc, mask_to_array as arr_hc
     N_SITES = 2*Lx*Ly
     N_PART  = N_SITES // 2
     BASIS   = enum_hc(N_SITES, N_PART)
@@ -60,13 +61,23 @@ def loss_fn(params, occ, tv, target):
     preds = model.apply(params, occ, tv, train=False)
     return jnp.mean((preds - target) ** 2)
 
+LOSS_TYPE = "overlap"         # "overlap"  or  "amp_phase"
+
+def loss_fn(params, occ, tv, target, neighbours=None):
+    pred = model.apply(params, occ, tv, train=False)
+    if LOSS_TYPE == "overlap":
+        return overlap_loss(pred, target)
+    else:
+        return amp_phase_loss(pred, target, neighbours)
+
 # value_and_grad takes care of autodiff
 @jax.jit
 def train_step(state: train_state.TrainState,
                occ: jnp.ndarray,
                tv:  jnp.ndarray,
-               target: jnp.ndarray):
-    loss, grads = jax.value_and_grad(loss_fn)(state.params, occ, tv, target)
+               target: jnp.ndarray,
+               neighbours: jnp.ndarray = None):
+    loss, grads = jax.value_and_grad(loss_fn)(state.params, occ, tv, target, neighbours)
     state = state.apply_gradients(grads=grads)
     return state, loss
 
