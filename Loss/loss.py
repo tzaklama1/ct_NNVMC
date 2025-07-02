@@ -64,3 +64,6 @@ def amp_phase_loss(pred: jnp.ndarray,
     L_phi = jnp.mean((gradθ - grad) ** 2)
 
     return L_amp + alpha * L_phi
+
+def loss_normDiff(pred: jnp.ndarray, target: jnp.ndarray):
+    return jnp.mean((pred - target) ** 2)

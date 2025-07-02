@@ -57,18 +57,21 @@ def mse_fn(params, occ, tv, target):
     return jnp.mean((preds-target)**2)
 
 # loss (no jit, params are dynamic)
-def loss_fn(params, occ, tv, target):
+def loss_fn2(params, occ, tv, target):
     preds = model.apply(params, occ, tv, train=False)
     return jnp.mean((preds - target) ** 2)
 
-LOSS_TYPE = "overlap"         # "overlap"  or  "amp_phase"
+LOSS_TYPE = "original"         # "overlap"  or  "amp_phase" or "original"
 
 def loss_fn(params, occ, tv, target, neighbours=None):
     pred = model.apply(params, occ, tv, train=False)
     if LOSS_TYPE == "overlap":
         return overlap_loss(pred, target)
-    else:
+    elif LOSS_TYPE == "amp_phase":
         return amp_phase_loss(pred, target, neighbours)
+    else:
+        preds = model.apply(params, occ, tv, train=False)
+        return jnp.mean((preds - target) ** 2)
 
 # value_and_grad takes care of autodiff
 @jax.jit
