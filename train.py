@@ -104,6 +104,25 @@ def run(epochs=4000):
     mse_test = jnp.mean((pred - COEFF_DB[TEST_TV])**2)
     print("Generalisation MSE on unseen (t,V) =", float(mse_test))
 
+    # ---- example usage of the MCMC sampler --------------------------------
+    from sampler.mcmc import sample_chain
+
+    def log_prob_fn(occ_state: jnp.ndarray) -> jnp.ndarray:
+        coeff = model.apply(state.params,
+                            occ_state[None, :],
+                            jnp.array(TRAIN_TV, dtype=jnp.float32)[None, :],
+                            train=False)
+        amp_sq = coeff[0, 0] ** 2 + coeff[0, 1] ** 2
+        return jnp.log(amp_sq + 1e-12)
+
+    init_state = OCC[0]
+    mcmc_key = jax.random.PRNGKey(1234)
+    samples = sample_chain(init_state, log_prob_fn, mcmc_key,
+                           n_samples=5, burn_in=100)
+    print("MCMC samples:")
+    for s in samples:
+        print(''.join(str(int(x)) for x in s))
+
 if __name__ == "__main__":
     print("Running on device:", jax.default_backend().upper())
     run()
