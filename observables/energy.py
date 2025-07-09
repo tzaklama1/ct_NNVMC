@@ -130,5 +130,9 @@ def expectation_local_energy(
     This simply averages the local energies of ``occ_batch``.
     """
     E_loc = local_energy(model, occ_batch, params_batch, H, occ_basis, state_index)
+<<<<<<< HEAD
     return jnp.mean(jnp.real(E_loc))
 
+=======
+    return jnp.mean(jnp.real(E_loc))
+>>>>>>> 45376f7 (Added particle number and multiple Ham parameters to model)

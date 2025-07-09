@@ -12,7 +12,7 @@ import time
 
 # read from file the parameters of the model: define Vpot, Uint, UV cutoff 
 params = {} 
-with open("config.csv", mode="r") as file:
+with open("ED/config.csv", mode="r") as file:
     reader = csv.reader(file)
     next(reader)  # Skip header
     for row in reader:
@@ -181,22 +181,27 @@ Htunnel = Htunnel.tocsr()
 Hloc = Hloc.tocsr()
 Hint = Hint.tocsr()
 
-delta_list = np.array([0,1,2]) 
+delta_list = np.array([0])#,1,2]) 
 int_energy_dict = {delta: [] for delta in delta_list}  # Initialize energy dictionary for all Qcom
+int_gsWaveFn = []
 for jdelta, delta in enumerate(delta_list): 
     Ham = Htunnel + delta * Hloc + Vnn * Hint   
     eigenvalues, eigenvectors = eigsh(Ham,k=4,which='SA',tol=1.e-10)
     int_energy_dict[delta].append(eigenvalues)  # Store eigenvalues for each delta
+    int_gsWaveFn.append(eigenvectors)  # Store eigenvectors for each delta
     print(f"delta={delta}, lowest eigenvalue={eigenvalues[0]}",flush=True)
+    print(f"delta={delta}, ground state wave function (first 3 entries)={eigenvectors[:,0][:3]}",flush=True)
+    print(f"delta={delta}, ground state wave function (last 3 entries)={eigenvectors[:,0][-3:]}",flush=True)
 
-output_energy_file = f"int_energy_dict_Ns{Ns}_Np{Nparticelle}.csv"
-with open(output_energy_file, mode="w", newline="") as file:
+#output_energy_file = f"int_energy_dict_Ns{Ns}_Np{Nparticelle}.csv"
+output_file = f"gsWaveFn_Ns{Ns}_Np{Nparticelle}_Vnn{Vnn}.csv"
+with open("ED/output/"+output_file, mode="w", newline="") as file:
     writer = csv.writer(file)
-    header = ["delta"] + [f"Eigenvalue_{i}" for i in range(len(next(iter(int_energy_dict.values()))))]
+    header = ["delta"] + [f"Eigenvalue_{i}" for i in range(len(next(iter(int_energy_dict.values()))))] + ["GroundStateWaveFunction"]
     writer.writerow(header)
     # Write the data rows
     for delta, eigenvalues in int_energy_dict.items():
-        row = [delta] + list(eigenvalues)  # Combine Qcom and eigenvalues into one row
+        row = [delta] + list(eigenvalues)  + [vector0[:,0] for vector0 in int_gsWaveFn] # Combine Qcom and eigenvalues into one row
         writer.writerow(row)
 
 end_time = time.time()

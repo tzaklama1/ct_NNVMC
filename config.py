@@ -12,7 +12,7 @@ T_HOP     = 0.5      # nearest-neighbour hopping      (t)
 V_INT     = 4.0      # nearest-neighbour repulsion    (V)
 
 # --- optimisation ----------------------------------------------------------
-LOSS_TYPE = "original"     # "overlap"  or  "amp_phase"
+LOSS_TYPE = "amp_phase"     # "overlap"  or  "amp_phase" or "original"
 EPOCHS    = 1200          # SGD steps in the demo script
 PRINT_EVERY = 300         # logging cadence (epochs)
 

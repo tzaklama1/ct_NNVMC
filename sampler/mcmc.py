@@ -77,4 +77,8 @@ def sample_chain(init_state: Array,
         state, _ = metropolis_step(state, subk, log_prob_fn)
         if step >= burn_in and (step - burn_in) % thin == 0:
             samples.append(state)
+<<<<<<< HEAD
     return jnp.stack(samples)
+=======
+    return jnp.stack(samples)
+>>>>>>> 45376f7 (Added particle number and multiple Ham parameters to model)
