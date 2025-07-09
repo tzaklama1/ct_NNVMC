@@ -13,29 +13,30 @@ from jax import lax
 # --------------------------------------------------------------------------- #
 #   Multi-group overlap loss: several (t,V,N) wave-functions at once          #
 # --------------------------------------------------------------------------- #
-def overlap_loss_multi(pred:   jnp.ndarray,      # (B,2)
-                       target: jnp.ndarray,      # (B,2)
-                       gIDs:   jnp.ndarray       # (B,) int  group-id
+def overlap_loss_multi(pred:        jnp.ndarray,   # (B,2)
+                       target:      jnp.ndarray,   # (B,2)
+                       gIDs:        jnp.ndarray,   # (B,)  int
+                       num_groups:  int            # PYTHON INT
                        ) -> jnp.ndarray:
     """
-    Computes   L = 1 - mean_g |⟨Ψθ_g | Ψ_ED_g⟩|²
-    for an arbitrary concatenation of batches that belong to
-    different Hamiltonian parameter sets g = 0..G-1.
+    L = 1 - mean_{g=0..G-1} | ⟨Ψθ_g | Ψ_ED_g⟩ |²
+    Uses jnp.bincount to avoid dynamic shapes.
     """
     ψθ = _to_complex(pred)
     ψ  = _to_complex(target)
+    eps = 1e-12
 
-    num_groups = int(jnp.max(gIDs)) + 1
-    eps        = 1e-12
+    # weighted sums per group -----------------------------------------------
+    dot = jnp.bincount(gIDs, weights=jnp.conj(ψθ) * ψ,
+                       length=num_groups)
+    nθ  = jnp.bincount(gIDs, weights=jnp.abs(ψθ)**2,
+                       length=num_groups)
+    nψ  = jnp.bincount(gIDs, weights=jnp.abs(ψ)**2,
+                       length=num_groups)
 
-    # segment sums over groups
-    dot   = lax.segment_sum(jnp.conj(ψθ) * ψ,        gIDs, num_groups)
-    nθ    = lax.segment_sum(jnp.abs(ψθ)**2,          gIDs, num_groups)
-    nψ    = lax.segment_sum(jnp.abs(ψ) **2,          gIDs, num_groups)
-
-    overlap = dot / (jnp.sqrt(nθ*nψ) + eps)          # (G,)
-    loss_g  = 1.0 - jnp.abs(overlap)**2
-    return jnp.mean(loss_g)                          # scalar
+    overlap = dot / (jnp.sqrt(nθ * nψ) + eps)          # (G,)
+    loss_g  = 1.0 - jnp.abs(overlap) ** 2
+    return jnp.mean(loss_g)
 
 
 def loss_normDiff(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:

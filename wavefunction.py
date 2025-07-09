@@ -1,17 +1,17 @@
 # wavefunction.py
 """
-Trains the Lattice-PsiFormer for a *single* (t,V) pair on synthetic targets,
+Trains the LatticeTransFormer for a *single* (t,V) pair on synthetic targets,
 then prints the first 10 complex coefficients ψ(n; t,V).
 
 Swap OCC/TARGET with your exact-diagonalisation data for real physics runs.
 """
 import jax, jax.numpy as jnp
-from train import (                      # all imported from your existing code
+from train import (                      # all imported from existing code
     OCC,                    # (H, N_sites)  integer array of Fock states
     create_state,           # helper that initialises model & optimiser
     train_step,             # one SGD step (jit-compiled)
     mse_fn,                 # MSE loss helper
-    model                   # the LatticePsiFormer instance
+    model                   # the LatticeTransFormer instance
 )
 
 print("Detected JAX backend →", jax.default_backend().upper(),
