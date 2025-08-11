@@ -1,4 +1,4 @@
-# sampler.py
+# sampler_jax.py
 """
 Metropolis–Hastings sampler for spinless fermion Fock states at fixed N.
 Targets p(σ) ∝ |ψ(σ; λ)|^2 using your trained JAX model.
