@@ -76,85 +76,14 @@ def run_ed(config_file: str | Path,
     params = _load_params(cfg_path)
 
     # ------------------------------------------------------------------ set-up
-    Xa, Xb, Xc, Xd = (int(params[k]) for k in ("a", "b", "c", "d"))
-    #Xa, Xb, Xc, Xd = [2,2,2,-4]
+    Ns             = int(params["Nsites"])  
     Nparticelle    = int(params["Nparticelle"])
     Vnn            = float(params["Vnn"])
 
     print(f"Parameters read from {cfg_path.name}: {params}")
-
-    # basis vectors  
-    a_vec = np.array([ np.sqrt(3)/2 - 1j/2 , 1j , -np.sqrt(3)/2 - 1j/2 ])   
-    ag = np.array([-a_vec[0],a_vec[1]])
-    uvec = np.array([1,+1j*np.sqrt(3)/2-1/2,-1j*np.sqrt(3)/2-1/2])/np.sqrt(3)
-    g_vec = (4*np.pi/np.sqrt(3))*np.array([ -1 , 1/2+1j*np.sqrt(3)/2])
-
-    # Torus
-    ff = np.array([[Xa,Xb],[Xc,Xd]])
-    Ns = int(round(np.abs(np.linalg.det(ff)),5)) 
-    print("number of sites =",2*Ns," hole-doping =",Nparticelle," filling factor =",Nparticelle/Ns)
-    T = [] # torus 
-    T.append(ff[0,0] * ag[0] + ff[0,1] * ag[1] )
-    T.append(ff[1,0] * ag[0] + ff[1,1] * ag[1] ) 
-    T = np.asarray(T)
-    ff_k = np.linalg.inv(ff).T
-    bb = [] # minimum momentum resolution 
-    bb.append( ff_k[0,0]*g_vec[0] + ff_k[0,1]*g_vec[1] ) 
-    bb.append( ff_k[1,0]*g_vec[0] + ff_k[1,1]*g_vec[1] )
-    bb = np.asarray(bb)
-
-    # PBC position
-    def PBC_position( R, bvec, avec, ft): 
-        f = np.zeros(2,dtype=float)
-        for s in range(2):  # project in the basis
-            f[s] = mod_between_neg_half_and_half(round(prodvec(R,bvec[s])/(2*np.pi),6))
-        vec =  np.round( avec @ ft @ f , 6 )
-        return vec 
-
-    # PBC momentum
-    def PBC_momentum( kk, bvec, avec, ft): 
-        f = np.zeros(2,dtype=float) 
-        for s in range(2):  # project in the basis
-            f[s] = mod_between_neg_half_and_half(round(prodvec(kk,avec[s])/(2*np.pi),6))
-        vec =  np.round( bvec @ ft @ f , 6 )
-        return vec
-
-    # build the lattice in real and momentum space 
-    num = 20
-    lattice = {}
-    klattice = {}
-    count = 0 
-    countK = 0 
-    ft = np.linalg.inv(ff_k)
-    pr = np.array([1,1j])
-    for j in range(num): 
-        for l in range(num): 
-            R = l*ag[0] + j*ag[1] - sum(T)/2
-            k = l*bb[0] + j*bb[1]
-            vec = PBC_position( R=R, bvec=bb, avec=ag, ft=ft)
-            vecK = PBC_momentum( kk=k, bvec=bb, avec=ag, ft=ft)
-            if not any(np.isclose(vec, existing_vec, atol=1e-8) for existing_vec in lattice.values()):
-                lattice[count] = vec
-                count += 1
-            if not any(np.isclose(vecK, existing_vec, atol=1e-8) for existing_vec in klattice.values()):
-                klattice[countK] = vecK
-                countK += 1 
-
-    connectAB = [[0,0],[1,0],[1,-1]]
-    linking_table = {} 
-    for jr,r in enumerate(lattice.values()):
-        match = []
-        for js,dv in enumerate(connectAB):
-            rp = r + dv@ag 
-            rp = PBC_position( R=rp, bvec=bb, avec=ag, ft=ft)
-            match.append(next((k for k, v in lattice.items() if np.isclose(rp, v, atol=1e-5)), None))
-        linking_table[jr] = [m + Ns for m in match] 
-        match = [] 
-        for js,dv in enumerate(connectAB):
-            rp = r - dv@ag 
-            rp = PBC_position( R=rp, bvec=bb, avec=ag, ft=ft)
-            match.append(next((k for k, v in lattice.items() if np.isclose(rp, v, atol=1e-5)), None))   
-        linking_table[jr+Ns] = match
+ 
+    klattice = 2*np.pi/Ns * np.arange(Ns)                                               # k lattice points  
+    linking_table = {jr: [np.mod(jr-1, Ns), np.mod(jr+1, Ns)] for jr in range(Ns)}      # 1D linking table 
 
     # binary representation
     def n2occ(n,Nsize):
@@ -174,7 +103,7 @@ def run_ed(config_file: str | Path,
         return results
 
     ##### Nparticelle number of particles specified previously >> N=2*Ns 
-    combinations = generate_combinations(N=2*Ns,Np=Nparticelle)
+    combinations = generate_combinations(N=Ns,Np=Nparticelle)
     Nstates = len(combinations)
     states = np.arange(Nstates)
     state2ind = dict(zip(combinations,states)) 
@@ -202,16 +131,16 @@ def run_ed(config_file: str | Path,
     # Build the Hamiltonian
     Htunnel = lil_matrix((Nstates, Nstates), dtype=np.complex128)   # LIL format for easy assignment
     Hint    = lil_matrix((Nstates, Nstates), dtype=np.complex128)   # LIL format for easy assignment
-    Hloc    = lil_matrix((Nstates, Nstates), dtype=np.complex128)   # LIL format for easy assignment
+    #Hloc    = lil_matrix((Nstates, Nstates), dtype=np.complex128)   # LIL format for easy assignment
     for key, index in state2ind.items():
-        string = n2occ(n=key,Nsize=2*Ns)  
+        string = n2occ(n=key,Nsize=Ns)  
         occ_vals = np.array([int(bit) for bit in string])
         posAH = np.where(occ_vals == 1)[0]
-        part_A = string[:Ns]
-        part_B = string[Ns:]
-        pA = part_A.count('1')
-        pB = part_B.count('1')
-        Hloc[index,index] = pB 
+        #part_A = string[:Ns]
+        #part_B = string[Ns:]
+        #pA = part_A.count('1')
+        #pB = part_B.count('1')
+        #Hloc[index,index] = pB 
         for xx in posAH: 
             jxx = linking_table[xx]
             # print( f'linking table, {jxx}' ) 
@@ -228,7 +157,7 @@ def run_ed(config_file: str | Path,
                     Htunnel[index_new,index] += -segno
 
     Htunnel = Htunnel.tocsr()
-    Hloc = Hloc.tocsr()
+    #Hloc = Hloc.tocsr()
     Hint = Hint.tocsr()
 
     # ---------------------------------------------------------------- solve
@@ -237,7 +166,7 @@ def run_ed(config_file: str | Path,
 
     t0 = time.time()
     for delta in delta_list:
-        Ham = Htunnel + delta*Hloc + Vnn*Hint
+        Ham = Htunnel + Vnn*Hint #+ delta*Hloc 
         evals, evecs = eigsh(Ham, k=4, which="SA", tol=1e-10)
         int_energy_dict[delta].append(evals)
         int_gs_vecs.append(evecs[:, 0])                # ground state

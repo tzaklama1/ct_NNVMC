@@ -1,4 +1,4 @@
-# lattice_1d.py
+# lattice1D.py
 """
 1-D spinless fermion chain with PBC (nearest-neighbour t-V model).
 """

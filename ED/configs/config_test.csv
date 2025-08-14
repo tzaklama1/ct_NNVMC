@@ -1,7 +1,4 @@
 parameter, value
-a, 2
-b, 2
-c, 2
-d, -4
+Nsites, 12
 Nparticelle, 4
-Vnn, 5.0
+Vnn, 8.0

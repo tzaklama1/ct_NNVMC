@@ -4,8 +4,7 @@ This module implements the local energy expression using only the few
 configurations that are connected to a given Fock state by the local
 Hamiltonian terms.  It avoids constructing the full Hamiltonian matrix,
 which rapidly becomes intractable as the lattice size grows.  The
-implementation follows the prescription of Eq. (5.13) in
-Sorella & Becca, *Quantum Monte Carlo Approaches for Correlated Systems*.
+implementation follows the prescription in Sorella & Becca.
 """
 
 from __future__ import annotations
